@@ -163,31 +163,36 @@ int main(void)
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
 
+  // MY code
+  	  uint32_t last_led_toggle = 0;
+  	  uint32_t last_log_time = 0;
+  	  uint32_t last_double_toggle = 0;
+
+  	  uint32_t led_toggle_period = 500;
+
+  	  uint8_t double_toggle_state = 0;
+  	  uint32_t double_toggle_step_time = 0;
+  	  uint32_t double_toggle_interval = 50;
+
   /* USER CODE END 2 */
+
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  while (rx_tail != rx_head) {
-		  uint8_t b = rx_buf[rx_tail];
-		  rx_tail = (rx_tail + 1) & (RX_BUF_SIZE - 1);
+	  //MY CODE: read time
+	  uint32_t current_time = HAL_GetTick();
 
-		  if (b == '\n' || b == '\r') {
-			  if (idx > 0) {
-				  cmd[idx] = 0;
-				  process_command(cmd);
-			  }
-			  idx = 0;
-			  continue;
-		  }
 
-		  if (idx < 31) {
-			 cmd[idx] = (char)b;
-			 idx++;
-		  } else {
-			 idx = 0;
-		  }
+	  //task 1
+	  if ((current_time - last_led_toggle >= led_toggle_period) && (double_toggle_state == 0)) {
+		  last_led_toggle = current_time;
+		  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+
+	  }
+
+
 	  }
     /* USER CODE END WHILE */
 
