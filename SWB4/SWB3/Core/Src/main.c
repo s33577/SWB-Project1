@@ -26,6 +26,10 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+#define LOGI(fmt, ...) printf("[INFO] " fmt "\r\n", ##__VA_ARGS__) // informational message [cite: 39]
+#define LOGW(fmt, ...) printf("[WARN] " fmt "\r\n", ##__VA_ARGS__) // warning message [cite: 40]
+#define LOGE(fmt, ...) printf("[ERROR] " fmt "\r\n", ##__VA_ARGS__) // error message [cite: 41, 42]
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -60,6 +64,18 @@ static uint8_t tx_buf[TX_BUF_SIZE];
 static volatile uint16_t tx_head = 0;
 static volatile uint16_t tx_tail = 0;
 static volatile uint8_t tx_busy = 0;
+
+
+
+uint32_t led_blink_interval = 500;
+bool button_irq_mode = false;
+uint8_t error_signal_active = 0;
+
+uint32_t last_led_toggle = 0;
+uint32_t last_log_send = 0;
+uint32_t last_double_toggle_start = 0;
+uint8_t double_toggle_step = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -129,6 +145,63 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 		HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 		printf("TIM6 UP\n\r");
 	}
+}
+
+void trigger(uint8_t error_code) {
+	error_signal_active = error_code;
+}
+
+void process_command(char* cmd) {
+	char* token = strtok(cmd, "\r\n");
+	if (token == NULL) {
+		retrun;
+	}
+
+	if (strcmp(token, "gpio") == 0) {
+		token = strtok(NULL, " \r\n");
+		if (token && strcmp(token, "status") == 0) {
+			GPIO_PinState btn = HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_GPIO_Pin);
+			GPIO_PinState led = HAL_GPIO_ReadPin(LED_GPIO_Port, LED_Pin);
+			LOGI("Button: %s, LED: %s", (btn == GPIO_PIN_SET) ? "PRESSED" : "RELEASED", (led == GPIO_PIN_SET) ? "ON" : "OFF");
+
+		} else{
+			LOGE("Invalid command");
+			trigger_error(2);
+		}
+	} else if (strcmp(token, "led") == 0) {
+		token = strtok(NULL, " \r\n");
+		if (token && strcmp(token, "on") == 0) {
+			HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+			LOGI("LED turn on");
+		} else if (token && strcmp(token, "off") == 0) {
+			HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+			LOGI("LED turn OFF");
+
+		} else if (token && strcmp(token, "toggle") == 0) {
+			HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+			LOGI("LED toggled");
+		} else {
+			LOGE("Invalid command");
+			trigger_error(2);
+		}
+	} else if (strcmp(token, "button") == 0) {
+		token = strtok(NULL, " \r\n");
+		if (token && strcmp(token, "mode") == 0) {
+			token = strtok(NULL, " \r\n");
+			if (token && strcmp(token, "poll") == 0) {
+				button_irq_mode = false;
+				LOGI("Button mode set to POLLING");
+			} else if (token && strcmp(token, "irq") == 0) {
+				button_irq_mode = true;
+				LOGI("Button mode set to IRQ");
+
+
+			} else {
+				LOGE("Invalid command");
+				trigger_error(2);
+			}
+		}
+	} // add flash after wards
 }
 
 /* USER CODE END 0 */
