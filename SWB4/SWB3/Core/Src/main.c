@@ -26,9 +26,9 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#define LOGI(fmt, ...) printf("[INFO] " fmt "\r\n", ##__VA_ARGS__) // informational message [cite: 39]
-#define LOGW(fmt, ...) printf("[WARN] " fmt "\r\n", ##__VA_ARGS__) // warning message [cite: 40]
-#define LOGE(fmt, ...) printf("[ERROR] " fmt "\r\n", ##__VA_ARGS__) // error message [cite: 41, 42]
+#define LOGI(fmt, ...) printf("[INFO] " fmt "\r\n", ##__VA_ARGS__) // informational message
+#define LOGW(fmt, ...) printf("[WARN] " fmt "\r\n", ##__VA_ARGS__) // warning message
+#define LOGE(fmt, ...) printf("[ERROR] " fmt "\r\n", ##__VA_ARGS__) // error message
 
 /* USER CODE END Includes */
 
@@ -39,6 +39,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define FLASH_USER_START_ADDR  ((uint32_t)0x0803F800U) // constant giving the start address of the flash area we’ll use
+#define FLASH_USER_END_ADDR    ((uint32_t)0x08040000U) // end address of that region. The code will only operate inside this range.
 
 /* USER CODE END PD */
 
@@ -59,7 +62,7 @@ static volatile uint16_t rx_head = 0;
 static volatile uint16_t rx_tail = 0;
 static uint8_t rx_byte = 0;
 
-#define TX_BUF_SIZE 128u
+#define TX_BUF_SIZE 256u
 static uint8_t tx_buf[TX_BUF_SIZE];
 static volatile uint16_t tx_head = 0;
 static volatile uint16_t tx_tail = 0;
@@ -67,14 +70,19 @@ static volatile uint8_t tx_busy = 0;
 
 
 
-uint32_t led_blink_interval = 500;
-bool button_irq_mode = false;
-uint8_t error_signal_active = 0;
+uint32_t blink_delay = 500;
+uint8_t use_irq = 0;
+uint8_t has_error = 0;
 
-uint32_t last_led_toggle = 0;
-uint32_t last_log_send = 0;
-uint32_t last_double_toggle_start = 0;
-uint8_t double_toggle_step = 0;
+uint32_t t_led = 0;
+uint32_t t_log = 0;
+uint32_t t_double = 0;
+uint8_t d_step = 0;
+
+uint32_t t_btn = 0;
+uint8_t clicks = 0;
+uint8_t last_btn = 1;
+uint8_t auto_blink = 1;
 
 /* USER CODE END PV */
 
@@ -89,15 +97,56 @@ static void MX_TIM6_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void process_command(char* cmd) {
-	printf("%s\r\n", cmd);
+
+// Erase configured flash region (whole pages)
+HAL_StatusTypeDef flash_erase_region(void)
+{
+    FLASH_EraseInitTypeDef EraseInit = {0};
+    uint32_t PageError = 0; // store any page number that failed to erase
+    const uint32_t pageSize = FLASH_PAGE_SIZE;
+    if (FLASH_USER_START_ADDR >= FLASH_USER_END_ADDR) return HAL_ERROR;
+
+    uint32_t startPage = (FLASH_USER_START_ADDR - FLASH_BASE) / pageSize;
+    uint32_t nbPages = (FLASH_USER_END_ADDR - FLASH_USER_START_ADDR + pageSize - 1) / pageSize;
+
+    HAL_FLASH_Unlock(); // unlock flash control registers so we can erase/program.
+
+    EraseInit.TypeErase = FLASH_TYPEERASE_PAGES; // erase by pages
+    EraseInit.Banks = FLASH_BANK_1; // different nucleo boards may have different amount of data banks
+    EraseInit.Page = startPage; // start page to erase, because defined region is one page long (2kb)
+    EraseInit.NbPages = nbPages;
+    HAL_StatusTypeDef st = HAL_FLASHEx_Erase(&EraseInit, &PageError);
+    HAL_FLASH_Lock(); // lock it back
+
+    return st;
+}
+
+HAL_StatusTypeDef flash_write_doubleword(uint32_t addr, uint64_t value)
+{
+    if ((addr < FLASH_USER_START_ADDR) || ((addr + 8) > FLASH_USER_END_ADDR) || (addr & 7U)) {
+        return HAL_ERROR;
+    }
+    HAL_FLASH_Unlock();
+    HAL_StatusTypeDef st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, addr, value);
+    HAL_FLASH_Lock();
+    return st;
+}
+
+// Read bytes from flash into buffer
+HAL_StatusTypeDef flash_read_bytes(uint32_t addr, uint8_t *buf, uint32_t len)
+{
+    if ((addr < FLASH_USER_START_ADDR) || ((addr + len) > FLASH_USER_END_ADDR)) {
+        return HAL_ERROR;
+    }
+    memcpy(buf, (void*)addr, len); // copy from the flash addr to the buff
+    return HAL_OK;
 }
 
 int __io_putchar(int ch) {
 	uint8_t c = (uint8_t) ch;
 	uint8_t need_kick = 0;
-
 	__disable_irq();
+
 	uint16_t next_head = (tx_head + 1) & (TX_BUF_SIZE - 1);
 	if (next_head != tx_tail) {
 		tx_buf[tx_head] = c;
@@ -140,68 +189,72 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef* huart) {
 	}
 }
 
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
-	if (htim == &htim6) {
-		HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-		printf("TIM6 UP\n\r");
-	}
-}
-
-void trigger(uint8_t error_code) {
-	error_signal_active = error_code;
-}
-
 void process_command(char* cmd) {
-	char* token = strtok(cmd, "\r\n");
-	if (token == NULL) {
-		retrun;
+	uint32_t addr;
+	uint32_t len;
+	uint64_t val;
+
+	if(strcmp(cmd, "gpio status") == 0) {
+		printf("BTN: %d, LED: %d\r\n", HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_Pin), HAL_GPIO_ReadPin(LED_GPIO_Port, LED_Pin));
+
+	} else if (strcmp(cmd, "led on") == 0) {
+
+		auto_blink = 0;
+		d_step = 0;
+		HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+		printf("INFO: LED ON (auto blink off) \r\n");
+
+
+
+	} else if (strcmp(cmd, "led off") == 0) {
+		auto_blink = 0;
+		d_step = 0;
+
+		HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+
+		printf("INFO: LED OFF (auto blink off) \r\n");
+
+	} else if (strcmp(cmd, "led toggle") == 0) {
+
+		auto_blink = 0;
+		d_step = 0;
+
+
+		HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+		printf("INFO: LED OFF (auto blink off) \r\n");
+
+	} else if (strcmp(cmd, "led auto") == 0) {
+		auto_blink = 1;
+		printf("INFO: auto blink on \r\n");
+
+	} else if (strcmp(cmd, "Button mode pool") == 0) {
+		use_irq = 0;
+	} else if (strcmp(cmd, "Button mode irq") == 0) {
+		use_irq = 1;
+	} else if (strcmp(cmd, "flash erase") == 0) {
+		if (sscanf(cmd + 12, "%lx %llx", &addr, &val) == 2) {
+			if (flash_write_doubleword(addr, val) == HAL_OK) {
+				printf("INFO: Flash Write OK\r\n");
+			} else {
+				printf("ERROR: Flash Write Failed\r\n");
+			}
+		} else {
+			has_error = 2;
+		}
+	} else if (strncmp(cmd, "flash read ", 11) == 0) {
+		if (sscanf(cmd + 11, "%lx %lu", &addr, &len) == 2) {
+			uint8_t buf[16] = {0};
+			if(flash_read_bytes(addr, buf, (len>16) ? 16 : len) == HAL_OK) {
+				for(int i = 0; i <((len > 16) ? 16 : len); i++) {
+					printf("%02X ", buf[i]);
+					printf("\r\n");
+				}
+			} else printf("ERROR: Flash Read Failed\r\n");
+		} else {
+			has_error = 2;
+		}
 	}
 
-	if (strcmp(token, "gpio") == 0) {
-		token = strtok(NULL, " \r\n");
-		if (token && strcmp(token, "status") == 0) {
-			GPIO_PinState btn = HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_GPIO_Pin);
-			GPIO_PinState led = HAL_GPIO_ReadPin(LED_GPIO_Port, LED_Pin);
-			LOGI("Button: %s, LED: %s", (btn == GPIO_PIN_SET) ? "PRESSED" : "RELEASED", (led == GPIO_PIN_SET) ? "ON" : "OFF");
-
-		} else{
-			LOGE("Invalid command");
-			trigger_error(2);
-		}
-	} else if (strcmp(token, "led") == 0) {
-		token = strtok(NULL, " \r\n");
-		if (token && strcmp(token, "on") == 0) {
-			HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-			LOGI("LED turn on");
-		} else if (token && strcmp(token, "off") == 0) {
-			HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-			LOGI("LED turn OFF");
-
-		} else if (token && strcmp(token, "toggle") == 0) {
-			HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-			LOGI("LED toggled");
-		} else {
-			LOGE("Invalid command");
-			trigger_error(2);
-		}
-	} else if (strcmp(token, "button") == 0) {
-		token = strtok(NULL, " \r\n");
-		if (token && strcmp(token, "mode") == 0) {
-			token = strtok(NULL, " \r\n");
-			if (token && strcmp(token, "poll") == 0) {
-				button_irq_mode = false;
-				LOGI("Button mode set to POLLING");
-			} else if (token && strcmp(token, "irq") == 0) {
-				button_irq_mode = true;
-				LOGI("Button mode set to IRQ");
-
-
-			} else {
-				LOGE("Invalid command");
-				trigger_error(2);
-			}
-		}
-	} // add flash after wards
 }
 
 /* USER CODE END 0 */
@@ -238,13 +291,92 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
+  HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+
+  printf("--- System Loaded --- \r\n");
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  char cmd[32];
+  uint32_t idx = 0;
+
+
+
   while (1)
   {
+	  uint32_t now = HAL_GetTick();
+
+
+	  if (auto_blink == 1) {
+		  if (has_error == 0 && (now - t_led >= blink_delay)) {
+			  t_led = now;
+			  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+		  }
+
+		  if (now - t_double >= 2200) {
+			  t_double = now;
+			  d_step = 1;
+		  }
+		  if (d_step == 1) {
+		  		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, 1);
+		  		  d_step = 2;
+		  	  } else if (d_step == 2 && now - t_double > 50) {
+		  		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, 0);
+		  		  d_step = 3;
+
+		  	  } else if (d_step == 3 && now - t_double > 100) {
+		  		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, 1);
+		  		  d_step = 4;
+		  	  } else if (d_step == 4 && now - t_double > 150) {
+		  		  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, 0);
+		  		  d_step = 0;
+		  	  }
+	  }
+
+
+
+	  // log
+	  if (now - t_log >= 1000){
+		  t_log = now;
+		  printf("INFO: Delay: %lu ms | Error: %d | Mode: %d\r\n", blink_delay, has_error, use_irq);
+		  if (has_error > 0) {
+			  has_error = 0;
+		  }
+	  }
+
+
+
+	  if (use_irq == 0) {
+		  uint8_t btn = HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_Pin);
+
+		  if (btn == 0 && last_btn == 1) {
+			  clicks++;
+			  t_btn = now;
+		  }
+
+		  last_btn = btn;
+
+		  if (clicks > 0 && (now -t_btn > 400)) {
+			  if (clicks == 1 && blink_delay > 100) {
+				  blink_delay -= 100;
+			  } if (clicks >= 2) {
+				  blink_delay += 100;
+			  }
+			  clicks = 0;
+		  }
+	  }
+
+
+
+
+
+
+
+
+
+	  // UART Buffer
 	  while (rx_tail != rx_head) {
 		  uint8_t b = rx_buf[rx_tail];
 		  rx_tail = (rx_tail + 1) & (RX_BUF_SIZE - 1);
