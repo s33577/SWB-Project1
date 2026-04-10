@@ -227,11 +227,20 @@ void process_command(char* cmd) {
 		auto_blink = 1;
 		printf("INFO: auto blink on \r\n");
 
-	} else if (strcmp(cmd, "Button mode pool") == 0) {
+	} else if (strcmp(cmd, "pool") == 0) {
 		use_irq = 0;
-	} else if (strcmp(cmd, "Button mode irq") == 0) {
+		printf("INFO: Mode set to POLL \r\n");
+	} else if (strcmp(cmd, "irq") == 0) {
 		use_irq = 1;
+		printf("INFO: Mode set to IRQ \r\n");
 	} else if (strcmp(cmd, "flash erase") == 0) {
+
+		if(flash_erase_region() == HAL_OK) {
+			printf("INFO: Flash Erased \r\n");
+		} else {
+			printf("ERROR: Flash Erase Failed \r\n");
+		}
+	} else if (strncmp(cmd, "flash write ", 12) == 0) {
 		if (sscanf(cmd + 12, "%lx %llx", &addr, &val) == 2) {
 			if (flash_write_doubleword(addr, val) == HAL_OK) {
 				printf("INFO: Flash Write OK\r\n");
@@ -240,6 +249,7 @@ void process_command(char* cmd) {
 			}
 		} else {
 			has_error = 2;
+			printf("ERROR: Invalid write parameters\r\n");
 		}
 	} else if (strncmp(cmd, "flash read ", 11) == 0) {
 		if (sscanf(cmd + 11, "%lx %lu", &addr, &len) == 2) {
@@ -247,12 +257,18 @@ void process_command(char* cmd) {
 			if(flash_read_bytes(addr, buf, (len>16) ? 16 : len) == HAL_OK) {
 				for(int i = 0; i <((len > 16) ? 16 : len); i++) {
 					printf("%02X ", buf[i]);
-					printf("\r\n");
 				}
-			} else printf("ERROR: Flash Read Failed\r\n");
+				printf("\r\n");
+			} else {
+				printf("ERROR: Flash Read Failed\r\n");
+			}
 		} else {
 			has_error = 2;
+			printf("ERROR: Invalid read parameters\r\n");
 		}
+	} else {
+		printf("ERROR: Unknown command: '%s'\r\n", cmd);
+		has_error = 1;
 	}
 
 }
@@ -380,6 +396,13 @@ int main(void)
 	  while (rx_tail != rx_head) {
 		  uint8_t b = rx_buf[rx_tail];
 		  rx_tail = (rx_tail + 1) & (RX_BUF_SIZE - 1);
+
+		  if (b == '\b' || b == 0x7F) {
+			  if (idx > 0) {
+				  idx--;
+				  continue;
+			  }
+		  }
 
 		  if (b == '\n' || b == '\r') {
 			  if (idx > 0) {
