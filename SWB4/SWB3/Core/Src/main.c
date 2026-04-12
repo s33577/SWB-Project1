@@ -26,9 +26,9 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
-#define LOGI(fmt, ...) printf("[INFO] " fmt "\r\n", ##__VA_ARGS__) // informational message
-#define LOGW(fmt, ...) printf("[WARN] " fmt "\r\n", ##__VA_ARGS__) // warning message
-#define LOGE(fmt, ...) printf("[ERROR] " fmt "\r\n", ##__VA_ARGS__) // error message
+#define LOGI(fmt, ...) printf("[INFO] " fmt "\r\n", ##__VA_ARGS__)
+#define LOGW(fmt, ...) printf("[WARN] " fmt "\r\n", ##__VA_ARGS__)
+#define LOGE(fmt, ...) printf("[ERROR] " fmt "\r\n", ##__VA_ARGS__)
 
 /* USER CODE END Includes */
 
@@ -195,14 +195,14 @@ void process_command(char* cmd) {
 	uint64_t val;
 
 	if(strcmp(cmd, "gpio status") == 0) {
-		printf("BTN: %d, LED: %d\r\n", HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_Pin), HAL_GPIO_ReadPin(LED_GPIO_Port, LED_Pin));
+		LOGI("BTN: %d, LED: %d\r\n", HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_Pin), HAL_GPIO_ReadPin(LED_GPIO_Port, LED_Pin));
 
 	} else if (strcmp(cmd, "led on") == 0) {
 
 		auto_blink = 0;
 		d_step = 0;
 		HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-		printf("INFO: LED ON (auto blink off) \r\n");
+		LOGI("LED ON");
 
 
 
@@ -212,7 +212,7 @@ void process_command(char* cmd) {
 
 		HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
 
-		printf("INFO: LED OFF (auto blink off) \r\n");
+		LOGI("LED OFF (auto blink off)");
 
 	} else if (strcmp(cmd, "led toggle") == 0) {
 
@@ -221,35 +221,35 @@ void process_command(char* cmd) {
 
 
 		HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-		printf("INFO: LED OFF (auto blink off) \r\n");
+		LOGI("LED OFF (auto blink off)");
 
 	} else if (strcmp(cmd, "led auto") == 0) {
 		auto_blink = 1;
-		printf("INFO: auto blink on \r\n");
+		LOGI("auto blink on");
 
-	} else if (strcmp(cmd, "pool") == 0) {
+	} else if (strcmp(cmd, "poll") == 0) {
 		use_irq = 0;
-		printf("INFO: Mode set to POLL \r\n");
+		LOGI("Mode set to POLL");
 	} else if (strcmp(cmd, "irq") == 0) {
 		use_irq = 1;
-		printf("INFO: Mode set to IRQ \r\n");
+		LOGI("Mode set to IRQ");
 	} else if (strcmp(cmd, "flash erase") == 0) {
 
 		if(flash_erase_region() == HAL_OK) {
-			printf("INFO: Flash Erased \r\n");
+			LOGI("INFO: Flash Erased");
 		} else {
-			printf("ERROR: Flash Erase Failed \r\n");
+			LOGE("Flash Erase Failed");
 		}
 	} else if (strncmp(cmd, "flash write ", 12) == 0) {
 		if (sscanf(cmd + 12, "%lx %llx", &addr, &val) == 2) {
 			if (flash_write_doubleword(addr, val) == HAL_OK) {
-				printf("INFO: Flash Write OK\r\n");
+				LOGI("Flash Write OK");
 			} else {
-				printf("ERROR: Flash Write Failed\r\n");
+				LOGE("Flash Write Failed");
 			}
 		} else {
 			has_error = 2;
-			printf("ERROR: Invalid write parameters\r\n");
+			LOGE("Invalid write parameters");
 		}
 	} else if (strncmp(cmd, "flash read ", 11) == 0) {
 		if (sscanf(cmd + 11, "%lx %lu", &addr, &len) == 2) {
@@ -260,14 +260,14 @@ void process_command(char* cmd) {
 				}
 				printf("\r\n");
 			} else {
-				printf("ERROR: Flash Read Failed\r\n");
+				LOGE("Flash Read Failed");
 			}
 		} else {
 			has_error = 2;
-			printf("ERROR: Invalid read parameters\r\n");
+			LOGE("Invalid read parameters");
 		}
 	} else {
-		printf("ERROR: Unknown command: '%s'\r\n", cmd);
+		LOGE("Unknown command: '%s'", cmd);
 		has_error = 1;
 	}
 
@@ -309,7 +309,17 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
 
-  printf("--- System Loaded --- \r\n");
+  LOGI("--- System Loaded ---");
+  uint64_t startup;
+  if (flash_read_bytes(FLASH_USER_START_ADDR, (uint8_t*)&startup, 8) == HAL_OK) {
+	  if (startup == 0xFFFFFFFFFFFFFFFF) {
+		 LOGI("Flash Record Status: EMPTY");
+	  } else {
+		 LOGI("Flash Record Status: OK");
+	  }
+  } else {
+	  LOGE("Flash Record Status: FAIL");
+  }
 
   /* USER CODE END 2 */
 
@@ -326,7 +336,11 @@ int main(void)
 
 
 	  if (auto_blink == 1) {
-		  if (has_error == 0 && (now - t_led >= blink_delay)) {
+		  if (has_error == 1) {
+			  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+		  } else if (has_error == 2) {
+			  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+		  } else if (now - t_led >= blink_delay) {
 			  t_led = now;
 			  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 		  }
@@ -356,7 +370,7 @@ int main(void)
 	  // log
 	  if (now - t_log >= 1000){
 		  t_log = now;
-		  printf("INFO: Delay: %lu ms | Error: %d | Mode: %d\r\n", blink_delay, has_error, use_irq);
+		  LOGI("Delay: %lu ms | Error: %d | Mode: %d\r\n", blink_delay, has_error, use_irq);
 		  if (has_error > 0) {
 			  has_error = 0;
 		  }
