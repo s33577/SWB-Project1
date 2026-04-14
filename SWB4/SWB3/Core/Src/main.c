@@ -229,10 +229,10 @@ void process_command(char* cmd) {
 		auto_blink = 1;
 		LOGI("auto blink on");
 
-	} else if (strcmp(cmd, "poll") == 0) {
+	} else if (strcmp(cmd, "button mode poll") == 0) {
 		use_irq = 0;
 		LOGI("Mode set to POLL");
-	} else if (strcmp(cmd, "irq") == 0) {
+	} else if (strcmp(cmd, "button mode irq") == 0) {
 		use_irq = 1;
 		LOGI("Mode set to IRQ");
 	} else if (strcmp(cmd, "flash erase") == 0) {
