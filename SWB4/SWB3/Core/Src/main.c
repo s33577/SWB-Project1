@@ -68,6 +68,8 @@ static volatile uint16_t tx_head = 0;
 static volatile uint16_t tx_tail = 0;
 static volatile uint8_t tx_busy = 0;
 
+volatile uint32_t custom_tick = 0;
+
 
 
 uint32_t blink_delay = 500;
@@ -309,6 +311,8 @@ int main(void)
   /* USER CODE BEGIN 2 */
   HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
 
+  HAL_TIM_Base_Start_IT(&htim6);
+
   LOGI("--- System Loaded ---");
   uint64_t startup;
   if (flash_read_bytes(FLASH_USER_START_ADDR, (uint8_t*)&startup, 8) == HAL_OK) {
@@ -332,7 +336,7 @@ int main(void)
 
   while (1)
   {
-	  uint32_t now = HAL_GetTick();
+	  uint32_t now = custom_tick;
 
 
 	  if (auto_blink == 1) {
@@ -505,9 +509,9 @@ static void MX_TIM6_Init(void)
 
   /* USER CODE END TIM6_Init 1 */
   htim6.Instance = TIM6;
-  htim6.Init.Prescaler = 16999;
+  htim6.Init.Prescaler = 169;
   htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim6.Init.Period = 9999;
+  htim6.Init.Period = 999;
   htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
   {
@@ -621,6 +625,12 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+	if (htim == &htim6) {
+	        custom_tick++; // Add 1 millisecond
+	    }
+}
 
 /* USER CODE END 4 */
 
